@@ -183,20 +183,16 @@ async function loadTokenizerData(modelId: string, options?: {
 3. **Fallback masking**: If no top-k tokens are valid, we compute the full token mask (slower path)
 4. **Logit modification**: Invalid tokens have their logits set to -∞, ensuring they're never sampled
 
-```
-┌─────────────────────────────────────────────────────────┐
-│                  Generation Loop                         │
-├─────────────────────────────────────────────────────────┤
-│  1. Model produces logits                               │
-│  2. GuidanceLogitsProcessor.process() called            │
-│     ├── Try top-5 tokens with is_token_allowed()        │
-│     ├── If hit: mask all except winner                  │
-│     └── If miss: compute full mask with get_token_mask()│
-│  3. Sample from modified logits                         │
-│  4. Call processor.onToken() with sampled token         │
-│  5. Repeat until processor.canStop() or max tokens      │
-└─────────────────────────────────────────────────────────┘
-```
+### Generation Loop
+
+1. Model produces logits
+2. GuidanceLogitsProcessor.process() called
+  1. Try top-5 tokens with is_token_allowed()
+  2. If hit: mask all except winner
+  3. If miss: compute full mask with get_token_mask()
+3. Sample from modified logits
+4. Call processor.onToken() with sampled token
+5. Repeat until processor.canStop() or max tokens
 
 ## Building from Source
 
