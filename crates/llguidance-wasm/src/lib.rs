@@ -142,7 +142,7 @@ impl LLGuidanceParser {
 
         // Create tokenizer environment
         let tok_env = Self::create_tok_env(tokenizer_json)?;
-        let vocab_size = tok_env.tok_trie().vocab_size() as usize;
+        let vocab_size = tok_env.tok_trie().vocab_size();
 
         // Create parser factory
         let mut factory = ParserFactory::new_simple(&tok_env)
@@ -291,9 +291,9 @@ impl LLGuidanceParser {
             .map_err(|e| JsValue::from_str(&format!("Failed to compute mask: {}", e)))?;
 
         let mut mask_vec = vec![0u8; self.vocab_size];
-        for i in 0..self.vocab_size {
+        for (i, item) in mask_vec.iter_mut().enumerate().take(self.vocab_size) {
             if mask.is_allowed(i as u32) {
-                mask_vec[i] = 1;
+                *item = 1;
             }
         }
 
