@@ -109,8 +109,8 @@ describe('Integration Tests', () => {
 
       const parser = new wasm.LLGuidanceParser(grammar, tokenizer);
 
-      // Advance should not throw
-      expect(() => parser.advance(97)).not.toThrow(); // 'a' = 97 in single byte env
+      // Advance with token 0 ('a') should not throw
+      expect(() => parser.advance(0)).not.toThrow();
     });
 
     it('should reset parser', async () => {

@@ -49,6 +49,14 @@ export interface TokenizerData {
   }>;
   /** The model type (BPE, WordPiece, etc.) */
   model_type?: string;
+  /** End of sequence token ID */
+  eos_token_id?: number;
+  /** Beginning of sequence token ID */
+  bos_token_id?: number;
+  /** Padding token ID */
+  pad_token_id?: number;
+  /** Unknown token ID */
+  unk_token_id?: number;
 }
 
 /**

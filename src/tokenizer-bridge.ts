@@ -13,6 +13,7 @@ export interface TransformersTokenizer {
   /** The model data containing vocabulary */
   model?: {
     vocab?: Map<string, number> | Record<string, number>;
+    tokens_to_ids?: Map<string, number> | Record<string, number>;
     merges?: string[];
   };
   /** Direct vocab access for some tokenizer types */
@@ -31,6 +32,16 @@ export interface TransformersTokenizer {
   getVocab?: () => Record<string, number>;
   /** Encode method for testing */
   encode?: (text: string) => number[];
+  /** Special token IDs */
+  eos_token_id?: number;
+  bos_token_id?: number;
+  pad_token_id?: number;
+  unk_token_id?: number;
+  /** Special tokens as strings */
+  eos_token?: string;
+  bos_token?: string;
+  pad_token?: string;
+  unk_token?: string;
 }
 
 /**
@@ -57,6 +68,9 @@ export function extractTokenizerData(
   if (tokenizer.getVocab) {
     // Preferred method - direct vocab access
     vocab = tokenizer.getVocab();
+  } else if (tokenizer.model?.tokens_to_ids) {
+    // transformer.js stores vocab as tokens_to_ids Map
+    vocab = mapToRecord(tokenizer.model.tokens_to_ids);
   } else if (tokenizer.model?.vocab) {
     // Some tokenizers store vocab in model
     vocab = mapToRecord(tokenizer.model.vocab);
@@ -66,7 +80,7 @@ export function extractTokenizerData(
   } else {
     throw new Error(
       'Unable to extract vocabulary from tokenizer. ' +
-      'Ensure you are passing a valid transformer.js tokenizer instance.',
+        'Ensure you are passing a valid transformer.js tokenizer instance.',
     );
   }
 
@@ -84,12 +98,86 @@ export function extractTokenizerData(
     special: token.special ?? false,
   }));
 
+  // Extract special token IDs
+  const eos_token_id = extractSpecialTokenId(tokenizer, vocab, 'eos');
+  const bos_token_id = extractSpecialTokenId(tokenizer, vocab, 'bos');
+  const pad_token_id = extractSpecialTokenId(tokenizer, vocab, 'pad');
+  const unk_token_id = extractSpecialTokenId(tokenizer, vocab, 'unk');
+
   return {
     vocab,
     merges,
     added_tokens,
     model_type: detectModelType(tokenizer),
+    eos_token_id,
+    bos_token_id,
+    pad_token_id,
+    unk_token_id,
   };
+}
+
+/**
+ * Extract a special token ID from the tokenizer
+ */
+function extractSpecialTokenId(
+  tokenizer: TransformersTokenizer,
+  vocab: Record<string, number>,
+  tokenType: 'eos' | 'bos' | 'pad' | 'unk',
+): number | undefined {
+  // First try direct token ID property
+  const idKey = `${tokenType}_token_id` as keyof TransformersTokenizer;
+  if (typeof tokenizer[idKey] === 'number') {
+    return tokenizer[idKey] as number;
+  }
+
+  // Then try token string property and look up in vocab
+  const tokenKey = `${tokenType}_token` as keyof TransformersTokenizer;
+  const tokenStr = tokenizer[tokenKey] as string | undefined;
+  if (tokenStr && vocab[tokenStr] !== undefined) {
+    return vocab[tokenStr];
+  }
+
+  // For EOS, try common token names
+  if (tokenType === 'eos') {
+    const eosNames = ['</s>', '<|endoftext|>', '<eos>', '<|eos|>', '[SEP]'];
+    for (const name of eosNames) {
+      if (vocab[name] !== undefined) {
+        return vocab[name];
+      }
+    }
+  }
+
+  // For BOS, try common token names
+  if (tokenType === 'bos') {
+    const bosNames = ['<s>', '<|startoftext|>', '<bos>', '<|bos|>', '[CLS]'];
+    for (const name of bosNames) {
+      if (vocab[name] !== undefined) {
+        return vocab[name];
+      }
+    }
+  }
+
+  // For PAD, try common token names
+  if (tokenType === 'pad') {
+    const padNames = ['<pad>', '<|pad|>', '[PAD]'];
+    for (const name of padNames) {
+      if (vocab[name] !== undefined) {
+        return vocab[name];
+      }
+    }
+  }
+
+  // For UNK, try common token names
+  if (tokenType === 'unk') {
+    const unkNames = ['<unk>', '<|unk|>', '[UNK]'];
+    for (const name of unkNames) {
+      if (vocab[name] !== undefined) {
+        return vocab[name];
+      }
+    }
+  }
+
+  return undefined;
 }
 
 /**
@@ -188,19 +276,94 @@ function parseTokenizerJson(json: unknown): TokenizerData {
     throw new Error('Invalid tokenizer.json: missing model.vocab');
   }
 
+  const vocab = data.model.vocab;
+  const added_tokens = data.added_tokens?.map((token) => ({
+    id: token.id,
+    content: token.content,
+    single_word: token.single_word ?? false,
+    lstrip: token.lstrip ?? false,
+    rstrip: token.rstrip ?? false,
+    normalized: token.normalized ?? true,
+    special: token.special ?? false,
+  }));
+
+  // Find special token IDs from added_tokens
+  let eos_token_id: number | undefined;
+  let bos_token_id: number | undefined;
+  let pad_token_id: number | undefined;
+  let unk_token_id: number | undefined;
+
+  if (added_tokens) {
+    for (const token of added_tokens) {
+      const content = token.content.toLowerCase();
+      if (
+        content === '</s>' ||
+        content === '<|endoftext|>' ||
+        content === '<eos>'
+      ) {
+        eos_token_id = token.id;
+      } else if (
+        content === '<s>' ||
+        content === '<|startoftext|>' ||
+        content === '<bos>'
+      ) {
+        bos_token_id = token.id;
+      } else if (content === '<pad>' || content === '<|pad|>') {
+        pad_token_id = token.id;
+      } else if (content === '<unk>' || content === '<|unk|>') {
+        unk_token_id = token.id;
+      }
+    }
+  }
+
+  // Also check vocab for special tokens
+  const eosNames = ['</s>', '<|endoftext|>', '<eos>', '<|eos|>'];
+  const bosNames = ['<s>', '<|startoftext|>', '<bos>', '<|bos|>'];
+  const padNames = ['<pad>', '<|pad|>'];
+  const unkNames = ['<unk>', '<|unk|>'];
+
+  if (eos_token_id === undefined) {
+    for (const name of eosNames) {
+      if (vocab[name] !== undefined) {
+        eos_token_id = vocab[name];
+        break;
+      }
+    }
+  }
+  if (bos_token_id === undefined) {
+    for (const name of bosNames) {
+      if (vocab[name] !== undefined) {
+        bos_token_id = vocab[name];
+        break;
+      }
+    }
+  }
+  if (pad_token_id === undefined) {
+    for (const name of padNames) {
+      if (vocab[name] !== undefined) {
+        pad_token_id = vocab[name];
+        break;
+      }
+    }
+  }
+  if (unk_token_id === undefined) {
+    for (const name of unkNames) {
+      if (vocab[name] !== undefined) {
+        unk_token_id = vocab[name];
+        break;
+      }
+    }
+  }
+
   return {
-    vocab: data.model.vocab,
+    vocab,
     merges: data.model.merges ?? [],
-    added_tokens: data.added_tokens?.map((token) => ({
-      id: token.id,
-      content: token.content,
-      single_word: token.single_word ?? false,
-      lstrip: token.lstrip ?? false,
-      rstrip: token.rstrip ?? false,
-      normalized: token.normalized ?? true,
-      special: token.special ?? false,
-    })),
+    added_tokens,
     model_type: data.model.type ?? 'unknown',
+    eos_token_id,
+    bos_token_id,
+    pad_token_id,
+    unk_token_id,
   };
 }
 

@@ -6,11 +6,12 @@
 
 use js_sys::Uint8Array;
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::sync::Arc;
 use wasm_bindgen::prelude::*;
 
 use llguidance::api::TopLevelGrammar;
-use llguidance::toktrie::ApproximateTokEnv;
+use llguidance::toktrie::{ApproximateTokEnv, TokRxInfo, TokTrie};
 use llguidance::{Matcher, ParserFactory};
 
 /// Grammar definition passed from JavaScript
@@ -25,6 +26,94 @@ enum GrammarSpec {
     JsonSchema { json_schema: serde_json::Value },
     Regex { rx: String },
     Lark { lark: String },
+}
+
+/// Tokenizer data passed from JavaScript
+/// This matches the TokenizerData interface in TypeScript
+#[derive(Debug, Deserialize)]
+struct TokenizerInput {
+    /// Vocabulary mapping token strings to IDs
+    vocab: HashMap<String, u32>,
+    /// Optional BPE merges (not used for trie construction but kept for compatibility)
+    /// Can be either strings like "Ġ t" or arrays like ["Ġ", "t"]
+    #[serde(default, deserialize_with = "deserialize_merges")]
+    #[allow(dead_code)]
+    merges: Vec<String>,
+    /// Added tokens (special tokens)
+    #[serde(default)]
+    added_tokens: Vec<AddedToken>,
+    /// Model type (e.g., "bpe", "wordpiece")
+    /// For Transformer.js compatibility, we keep this field but it is not used.
+    #[serde(default)]
+    #[allow(dead_code)]
+    model_type: Option<String>,
+    /// Special token IDs
+    #[serde(default)]
+    eos_token_id: Option<u32>,
+    #[serde(default)]
+    bos_token_id: Option<u32>,
+    #[serde(default)]
+    pad_token_id: Option<u32>,
+    #[serde(default)]
+    unk_token_id: Option<u32>,
+}
+
+/// Custom deserializer for merges that handles both string and array formats
+fn deserialize_merges<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::{self, SeqAccess, Visitor};
+    use std::fmt;
+
+    struct MergesVisitor;
+
+    impl<'de> Visitor<'de> for MergesVisitor {
+        type Value = Vec<String>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            formatter.write_str("a sequence of strings or arrays of strings")
+        }
+
+        fn visit_seq<S>(self, mut seq: S) -> Result<Vec<String>, S::Error>
+        where
+            S: SeqAccess<'de>,
+        {
+            let mut merges = Vec::new();
+
+            while let Some(value) = seq.next_element::<serde_json::Value>()? {
+                let merge_str = match value {
+                    serde_json::Value::String(s) => s,
+                    serde_json::Value::Array(arr) => {
+                        // Convert array like ["Ġ", "t"] to string "Ġ t"
+                        let parts: Vec<String> = arr
+                            .into_iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect();
+                        parts.join(" ")
+                    }
+                    _ => {
+                        return Err(de::Error::custom(
+                            "merge must be a string or array of strings",
+                        ))
+                    }
+                };
+                merges.push(merge_str);
+            }
+
+            Ok(merges)
+        }
+    }
+
+    deserializer.deserialize_seq(MergesVisitor)
+}
+
+#[derive(Debug, Deserialize)]
+struct AddedToken {
+    id: u32,
+    content: String,
+    #[serde(default)]
+    special: bool,
 }
 
 /// The main parser struct exposed to JavaScript
@@ -44,16 +133,15 @@ impl LLGuidanceParser {
         #[cfg(feature = "console_error_panic_hook")]
         console_error_panic_hook::set_once();
 
-        Self::new_inner(grammar_json, tokenizer_json)
-            .map_err(|e| JsValue::from_str(&e))
+        Self::new_inner(grammar_json, tokenizer_json).map_err(|e| JsValue::from_str(&e))
     }
 
-    fn new_inner(grammar_json: &str, _tokenizer_json: &str) -> Result<LLGuidanceParser, String> {
+    fn new_inner(grammar_json: &str, tokenizer_json: &str) -> Result<LLGuidanceParser, String> {
         // Parse the grammar
         let grammar = Self::parse_grammar(grammar_json)?;
 
-        // Create a simple tokenizer environment
-        let tok_env = ApproximateTokEnv::single_byte_env();
+        // Create tokenizer environment
+        let tok_env = Self::create_tok_env(tokenizer_json)?;
         let vocab_size = tok_env.tok_trie().vocab_size() as usize;
 
         // Create parser factory
@@ -74,6 +162,78 @@ impl LLGuidanceParser {
             matcher,
             vocab_size,
         })
+    }
+
+    /// Create a tokenizer environment from the JSON configuration
+    fn create_tok_env(
+        tokenizer_json: &str,
+    ) -> Result<Arc<dyn llguidance::toktrie::TokenizerEnv + Sync>, String> {
+        // Try to parse as TokenizerInput
+        let input: TokenizerInput = serde_json::from_str(tokenizer_json)
+            .map_err(|e| format!("Failed to parse tokenizer JSON: {}", e))?;
+
+        // Check if we have a valid vocabulary
+        if input.vocab.is_empty() {
+            return Err("Tokenizer vocabulary is empty".to_string());
+        }
+
+        // Find the maximum token ID to determine vocab size
+        let max_id = input.vocab.values().copied().max().unwrap_or(0);
+        let vocab_size = (max_id + 1) as usize;
+
+        // Build the words vector (token bytes indexed by token ID)
+        // Each entry is the byte representation of the token
+        let mut words: Vec<Vec<u8>> = vec![Vec::new(); vocab_size];
+
+        for (token_str, id) in &input.vocab {
+            if (*id as usize) < vocab_size {
+                // Handle special token encoding
+                // llguidance uses \xFF prefix for special tokens
+                let bytes = if input.added_tokens.iter().any(|t| t.id == *id && t.special) {
+                    // Special tokens get the \xFF prefix
+                    let mut special_bytes = vec![0xFF];
+                    special_bytes.extend(token_str.as_bytes());
+                    special_bytes
+                } else {
+                    // Regular tokens: decode the token string
+                    // GPT-2 style tokenizers use 'Ġ' (U+0120) to represent space
+                    // and other Unicode characters for byte encoding
+                    decode_token_bytes(token_str)
+                };
+                words[*id as usize] = bytes;
+            }
+        }
+
+        // Determine EOS token
+        // Priority: explicit eos_token_id > added token named </s> or <|endoftext|> > last token
+        let eos_token = input.eos_token_id.unwrap_or_else(|| {
+            // Look for common EOS tokens in added_tokens
+            for token in &input.added_tokens {
+                if token.content == "</s>"
+                    || token.content == "<|endoftext|>"
+                    || token.content == "<eos>"
+                    || token.content == "<|eos|>"
+                {
+                    return token.id;
+                }
+            }
+            // Fallback to last token
+            (vocab_size - 1) as u32
+        });
+
+        // Create TokRxInfo
+        let mut info = TokRxInfo::new(vocab_size as u32, eos_token);
+        info.tok_bos = input.bos_token_id;
+        info.tok_pad = input.pad_token_id;
+        info.tok_unk = input.unk_token_id;
+
+        // Create the trie
+        let trie = TokTrie::from(&info, &words);
+
+        // Wrap in ApproximateTokEnv
+        let tok_env = ApproximateTokEnv::new(trie);
+
+        Ok(Arc::new(tok_env))
     }
 
     fn parse_grammar(grammar_json: &str) -> Result<TopLevelGrammar, String> {
@@ -107,9 +267,7 @@ impl LLGuidanceParser {
                 let lark_grammar = format!("start: /{}/", rx);
                 Ok(TopLevelGrammar::from_lark(lark_grammar))
             }
-            GrammarSpec::Lark { lark } => {
-                Ok(TopLevelGrammar::from_lark(lark.clone()))
-            }
+            GrammarSpec::Lark { lark } => Ok(TopLevelGrammar::from_lark(lark.clone())),
         }
     }
 
@@ -166,8 +324,7 @@ impl LLGuidanceParser {
     /// Reset the parser to its initial state
     #[wasm_bindgen]
     pub fn reset(&mut self, grammar_json: &str) -> Result<(), JsValue> {
-        let grammar = Self::parse_grammar(grammar_json)
-            .map_err(|e| JsValue::from_str(&e))?;
+        let grammar = Self::parse_grammar(grammar_json).map_err(|e| JsValue::from_str(&e))?;
         let parser = self.factory.create_parser(grammar);
         self.matcher = Matcher::new(parser);
         Ok(())
@@ -184,6 +341,40 @@ impl LLGuidanceParser {
     pub fn stop_reason(&self) -> String {
         format!("{:?}", self.matcher.stop_reason())
     }
+}
+
+/// Decode a token string to its byte representation
+/// Handles GPT-2/BPE style encoding where special Unicode characters represent bytes
+fn decode_token_bytes(token: &str) -> Vec<u8> {
+    let mut result = Vec::new();
+
+    for c in token.chars() {
+        match c {
+            // GPT-2 style: 'Ġ' (U+0120) represents space (0x20)
+            'Ġ' => result.push(b' '),
+            // GPT-2 style: 'Ċ' (U+010A) represents newline (0x0A)
+            'Ċ' => result.push(b'\n'),
+            // GPT-2 style: 'ċ' (U+010B) sometimes used for tab
+            'ċ' => result.push(b'\t'),
+            // GPT-2 uses Unicode range U+0100-U+01FF to encode bytes 0x00-0xFF
+            // The mapping is: byte = unicode_codepoint - 0x100 (for 0x00-0x20, 0x7F-0xA0, 0xAD)
+            // But for printable ASCII, the character is used directly
+            c if c as u32 >= 0x100 && c as u32 <= 0x1FF => {
+                // This is a GPT-2 byte encoding
+                let byte = (c as u32 - 0x100) as u8;
+                result.push(byte);
+            }
+            // Regular ASCII/UTF-8 characters
+            c => {
+                // Encode the character as UTF-8 bytes
+                let mut buf = [0u8; 4];
+                let s = c.encode_utf8(&mut buf);
+                result.extend(s.as_bytes());
+            }
+        }
+    }
+
+    result
 }
 
 /// Initialize the WASM module
