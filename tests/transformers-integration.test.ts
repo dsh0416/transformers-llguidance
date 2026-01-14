@@ -376,9 +376,7 @@ describe('Transformers.js Integration', () => {
     // Use Qwen3-0.6B for realistic testing with a modern LLM tokenizer
     const MODEL_ID = 'Qwen/Qwen3-0.6B';
 
-    it(
-      'should create parser with Qwen3 tokenizer and validate token masks',
-      async () => {
+    it('should create parser with Qwen3 tokenizer and validate token masks', async () => {
         const { AutoTokenizer } = transformers;
 
         // Load the Qwen3 tokenizer
@@ -434,12 +432,10 @@ describe('Transformers.js Integration', () => {
           expect(mask[letterBToken]).toBe(0);
         }
       },
-      { timeout: 60000 },
+      60000,
     );
 
-    it(
-      'should create parser with JSON schema grammar',
-      async () => {
+    it('should create parser with JSON schema grammar', async () => {
         const { AutoTokenizer } = transformers;
 
         const tokenizer = await AutoTokenizer.from_pretrained(MODEL_ID, {
@@ -480,12 +476,10 @@ describe('Transformers.js Integration', () => {
           expect(mask[letterAToken]).toBe(0);
         }
       },
-      { timeout: 60000 },
+      60000,
     );
 
-    it(
-      'should integrate GuidanceLogitsProcessor with real parser',
-      async () => {
+    it('should integrate GuidanceLogitsProcessor with real parser', async () => {
         const { AutoTokenizer, LogitsProcessor, Tensor } = transformers;
 
         const tokenizer = await AutoTokenizer.from_pretrained(MODEL_ID, {
@@ -563,7 +557,7 @@ describe('Transformers.js Integration', () => {
           expect(resultData[digit0Token]).toBe(5);
         }
       },
-      { timeout: 60000 },
+      60000,
     );
   });
 });

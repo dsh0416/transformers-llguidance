@@ -5,14 +5,14 @@ import type { TokenizerData, Grammar } from '../src/types';
 vi.mock('../pkg/llguidance_wasm', () => {
   return {
     default: vi.fn(),
-    LLGuidanceParser: vi.fn().mockImplementation(() => ({
-      is_token_allowed: vi.fn().mockReturnValue(true),
-      get_token_mask: vi.fn().mockReturnValue(new Uint8Array(100).fill(1)),
-      advance: vi.fn(),
-      is_complete: vi.fn().mockReturnValue(false),
-      reset: vi.fn(),
-      vocab_size: vi.fn().mockReturnValue(100),
-    })),
+    LLGuidanceParser: class MockLLGuidanceParser {
+      is_token_allowed = vi.fn().mockReturnValue(true);
+      get_token_mask = vi.fn().mockReturnValue(new Uint8Array(100).fill(1));
+      advance = vi.fn();
+      is_complete = vi.fn().mockReturnValue(false);
+      reset = vi.fn();
+      vocab_size = vi.fn().mockReturnValue(100);
+    },
   };
 });
 
