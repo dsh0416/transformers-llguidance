@@ -1,6 +1,6 @@
 {
   "name": "transformers-llguidance",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Structured output generation for transformers.js using llguidance",
   "type": "module",
   "main": "./dist/index.js",
