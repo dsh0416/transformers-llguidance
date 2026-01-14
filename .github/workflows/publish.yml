@@ -30,6 +30,7 @@ jobs:
         with:
           node-version: '22'
           cache: 'npm'
+          registry-url: 'https://registry.npmjs.org'
     
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
