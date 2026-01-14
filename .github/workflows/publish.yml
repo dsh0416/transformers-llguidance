@@ -44,7 +44,7 @@ jobs:
         run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
 
       - name: Publish to npm
-        run: NODE_AUTH_TOKEN="" npm publish --access public # We use OIDC to authenticate with npm, blank out the token to avoid errors
+        run: npm publish --access public
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
