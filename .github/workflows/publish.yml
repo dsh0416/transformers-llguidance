@@ -1,75 +1,20 @@
 name: Publish
+permissions:
+  id-token: write
+  contents: read
 
 on:
-  release:
-    types: [published]
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
 
-permissions:
-  id-token: write  # Required for OIDC
-  contents: read
-
 jobs:
-  build:
-    name: Build
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32-unknown-unknown
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-          cache: 'npm'
-
-      - name: Cache Rust dependencies
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: crates/llguidance-wasm
-
-      - name: Install wasm-pack
-        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
-
-      - name: Install npm dependencies
-        run: npm ci
-
-      - name: Build WASM package
-        run: npm run build:wasm
-
-      - name: Build TypeScript
-        run: npm run build
-
-      - name: Run tests
-        run: npm run test:run
-
-      - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: package
-          path: |
-            dist/
-            pkg/
-            package.json
-            README.md
-            LICENSE
-
   publish:
     name: Publish to npm
-    needs: build
     runs-on: ubuntu-latest
-
-    permissions:
-      contents: read
-      id-token: write
 
     steps:
       - name: Download build artifacts
@@ -82,7 +27,22 @@ jobs:
         with:
           node-version: '22'
           registry-url: 'https://registry.npmjs.org'
+    
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/llguidance-wasm
+      
+      - name: Install wasm-pack
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
 
       - name: Publish to npm
         run: npm publish --provenance --access public
 
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Transformers LLGuidance ${{ github.ref_name }}
+          draft: true # release is draft until it is manually published
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          generate_release_notes: true
