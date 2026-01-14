@@ -7,6 +7,10 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+permissions:
+  id-token: write  # Required for OIDC
+  contents: read
+
 jobs:
   build:
     name: Build
